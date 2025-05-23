@@ -1,0 +1,31 @@
+
+services:
+  cassandra:
+    image: cassandra:latest
+    container_name: cassandra
+    ports:
+      - "9042:9042"  # CQL native transport port
+    volumes:
+      - ./apps/cassandra/scripts:/scripts
+      - ./apps/cassandra/cqlshrc:/.cassandra/cqlshrc
+    environment:
+      - CQLSH_HOST=host.docker.internal
+      - CQLSH_PORT=9042
+      - CASSANDRA_CLUSTER_NAME=golang_cassandra_sandbox
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e \"SELECT cluster_name FROM system.local;\""]
+      interval: 5s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+  cassandra-init:
+      image: cassandra:latest
+      container_name: cassandra-init
+      command: ["sh", "-c", "cqlsh cassandra 9042 -f /scripts/initialize_database.cql"]
+      volumes:
+        - ./apps/cassandra/scripts:/scripts
+      depends_on:
+        cassandra:
+          condition: service_healthy
+      restart: "no"

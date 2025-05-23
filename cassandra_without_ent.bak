@@ -1,0 +1,159 @@
+package main
+
+import (
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/gocql/gocql"
+)
+
+// ShoppingCart represents a row in the store.shopping_cart table.
+type ShoppingCart struct {
+	UserID              string    `cql:"userid"`
+	ItemCount           int       `cql:"item_count"`
+	LastUpdateTimestamp time.Time `cql:"last_update_timestamp"`
+}
+
+// newCassandraSession establishes a connection to the Cassandra cluster and returns a session.
+func newCassandraSession() (*gocql.Session, error) {
+	cluster := gocql.NewCluster("127.0.0.1") // Assuming Cassandra is running locally
+	cluster.Keyspace = "store"
+	cluster.Consistency = gocql.Quorum // Or adjust as needed
+	cluster.Timeout = 5 * time.Second  // Connection timeout
+
+	session, err := cluster.CreateSession()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Cassandra session: %w", err)
+	}
+	return session, nil
+}
+
+// createCart inserts a new shopping cart record into the database.
+func createCart(session *gocql.Session, cart ShoppingCart) error {
+	query := `INSERT INTO shopping_cart (userid, item_count, last_update_timestamp) VALUES (?, ?, ?)`
+	if err := session.Query(query, cart.UserID, cart.ItemCount, cart.LastUpdateTimestamp).Exec(); err != nil {
+		return fmt.Errorf("failed to create cart for user %s: %w", cart.UserID, err)
+	}
+	log.Printf("Created cart for user: %s", cart.UserID)
+	return nil
+}
+
+// getCartByUserID retrieves a shopping cart record by its UserID.
+func getCartByUserID(session *gocql.Session, userID string) (ShoppingCart, error) {
+	var cart ShoppingCart
+	query := `SELECT userid, item_count, last_update_timestamp FROM shopping_cart WHERE userid = ? LIMIT 1`
+	if err := session.Query(query, userID).Scan(&cart.UserID, &cart.ItemCount, &cart.LastUpdateTimestamp); err != nil {
+		if err == gocql.ErrNotFound {
+			return ShoppingCart{}, fmt.Errorf("cart for user %s not found", userID)
+		}
+		return ShoppingCart{}, fmt.Errorf("failed to get cart for user %s: %w", userID, err)
+	}
+	return cart, nil
+}
+
+// updateCartItemCount updates the item_count and last_update_timestamp for a given UserID.
+func updateCartItemCount(session *gocql.Session, userID string, newItemCount int) error {
+	query := `UPDATE shopping_cart SET item_count = ?, last_update_timestamp = ? WHERE userid = ?`
+	if err := session.Query(query, newItemCount, time.Now(), userID).Exec(); err != nil {
+		return fmt.Errorf("failed to update cart for user %s: %w", userID, err)
+	}
+	log.Printf("Updated cart for user %s, new item count: %d", userID, newItemCount)
+	return nil
+}
+
+// deleteCart deletes a shopping cart record by UserID.
+func deleteCart(session *gocql.Session, userID string) error {
+	query := `DELETE FROM shopping_cart WHERE userid = ?`
+	if err := session.Query(query, userID).Exec(); err != nil {
+		return fmt.Errorf("failed to delete cart for user %s: %w", userID, err)
+	}
+	log.Printf("Deleted cart for user: %s", userID)
+	return nil
+}
+
+// listAllCarts retrieves all shopping cart records.
+func listAllCarts(session *gocql.Session) ([]ShoppingCart, error) {
+	var carts []ShoppingCart
+	query := `SELECT userid, item_count, last_update_timestamp FROM shopping_cart`
+	iter := session.Query(query).Iter()
+	var cart ShoppingCart
+	for iter.Scan(&cart.UserID, &cart.ItemCount, &cart.LastUpdateTimestamp) {
+		carts = append(carts, cart)
+	}
+	if err := iter.Close(); err != nil {
+		return nil, fmt.Errorf("failed to iterate carts: %w", err)
+	}
+	return carts, nil
+}
+
+func main() {
+	session, err := newCassandraSession()
+	if err != nil {
+		log.Fatalf("Error connecting to Cassandra: %v", err)
+	}
+	defer session.Close()
+	log.Println("Successfully connected to Cassandra.")
+
+	// --- Demonstration ---
+
+	// 1. Create a new shopping cart
+	newCart := ShoppingCart{
+		UserID:              "testuser_123",
+		ItemCount:           1,
+		LastUpdateTimestamp: time.Now(),
+	}
+	if err := createCart(session, newCart); err != nil {
+		log.Printf("Error creating cart: %v", err)
+	}
+
+	// 2. Retrieve the newly created cart
+	fmt.Println("\n--- Retrieving created cart ---")
+	retrievedCart, err := getCartByUserID(session, newCart.UserID)
+	if err != nil {
+		log.Printf("Error retrieving cart: %v", err)
+	} else {
+		fmt.Printf("Retrieved Cart: %+v\n", retrievedCart)
+	}
+
+	// 3. Update the item count
+	fmt.Println("\n--- Updating cart item count ---")
+	if err := updateCartItemCount(session, newCart.UserID, 10); err != nil {
+		log.Printf("Error updating cart: %v", err)
+	}
+
+	// 4. Retrieve the updated cart
+	fmt.Println("\n--- Retrieving updated cart ---")
+	retrievedUpdatedCart, err := getCartByUserID(session, newCart.UserID)
+	if err != nil {
+		log.Printf("Error retrieving updated cart: %v", err)
+	} else {
+		fmt.Printf("Retrieved Updated Cart: %+v\n", retrievedUpdatedCart)
+	}
+
+	// 5. List all carts
+	fmt.Println("\n--- Listing all carts ---")
+	allCarts, err := listAllCarts(session)
+	if err != nil {
+		log.Printf("Error listing all carts: %v", err)
+	} else {
+		for _, cart := range allCarts {
+			fmt.Printf("Cart: %+v\n", cart)
+		}
+	}
+
+	// 6. Delete the created cart
+	fmt.Println("\n--- Deleting created cart ---")
+	if err := deleteCart(session, newCart.UserID); err != nil {
+		log.Printf("Error deleting cart: %v", err)
+	}
+
+	// 7. Attempt to retrieve the deleted cart
+	fmt.Println("\n--- Attempting to retrieve deleted cart ---")
+	_, err = getCartByUserID(session, newCart.UserID)
+	if err != nil {
+		log.Printf("Expected error after deletion: %v", err)
+	} else {
+		fmt.Println("Unexpected: Deleted cart still found.")
+	}
+}
